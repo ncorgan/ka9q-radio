@@ -2,6 +2,9 @@
 // Read from SoapySDR
 // Accept control commands from UDP socket
 #define _GNU_SOURCE 1
+#include <SoapySDR/Device.h>
+#include <SoapySDR/Types.h>
+
 #include <assert.h>
 #include <pthread.h>
 #include <string.h>
