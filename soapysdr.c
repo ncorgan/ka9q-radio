@@ -20,7 +20,6 @@
 #include <signal.h>
 #include <locale.h>
 #include <sys/time.h>
-#include <rtl-sdr.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <errno.h>
@@ -34,28 +33,10 @@
 #include "decimate.h"
 #include "status.h"
 
-// Define USE_NEW_LIBRTLSDR to use my version of librtlsdr with rtlsdr_get_freq()
-// that corrects for synthesizer fractional-N residuals. If not defined, we do the correction
-// here assuming an R820 tuner (the most common)
-#undef USE_NEW_LIBRTLSDR
-
-//#define REMOVE_DC 1
-
-// Internal clock is 28.8 MHz, and 1.8 MHz * 16 = 28.8 MHz
-#define DEFAULT_SAMPRATE (1800000)
-#define DEFAULT_BLOCKSIZE (960)
-
-#define N_serials 20
-uint64_t Serials[N_serials];
+// TODO: tabbing, thing in top line
 
 // Time in 100 ms update intervals to wait between gain steps
 int const HOLDOFF_TIME = 2;
-
-// Configurable parameters
-// decibel limits for power
-float const DC_alpha = 1.0e-6;  // high pass filter coefficient for DC offset estimates, per sample
-float const AGC_upper = -20;
-float const AGC_lower = -40;
 
 int const Bufsize = 16384;
 #define BUFFERSIZE  (1<<21) // Upcalls seem to be 256KB; don't make too big or we may blow out of the cache
@@ -67,12 +48,14 @@ int Status_ttl = 1;
 int IP_tos = 48; // AF12 left shifted 2 bits
 int Verbose;
 int AGC;     // Default to hardware AGC
-int Dev = 0; // Default to device 0
-struct rtlsdr_dev *Device; // Set for benefit of closedown()
+char *Dev = ""; // Default to first device found
+struct SoapySDRDevice *Device; // Set for benefit of closedown()
 
 struct sdrstate {
-  struct rtlsdr_dev *device;    // Opaque pointer
+  struct SoapySDRDevice *device;    // Opaque pointer
+  struct SoapySDRStream *stream;    // Opaque pointer
 
+/*
   uint32_t sample_rates[20];
   uint64_t SN; // Serial number
   char *description;
@@ -95,6 +78,7 @@ struct sdrstate {
   int clips;  // Sample clips since last reset
   float power;   // Running estimate of A/D signal power
   float DC;      // DC offset for real samples
+*/
 
   int blocksize;// Number of real samples per packet or twice the number of complex samples per packet
 
@@ -123,6 +107,7 @@ struct sdrstate {
 
 static struct option Options[] =
   {
+      /*
     {"iface", required_argument, NULL, 'A'},
     {"pcm-out", required_argument, NULL, 'D'},
     {"iq-out", required_argument, NULL, 'D'},
@@ -146,12 +131,13 @@ static struct option Options[] =
     {"status-ttl", required_argument, NULL, 't'},
     {"verbose", no_argument, NULL, 'v'},
     {NULL, 0, NULL, 0},
+    */
   };
 static char const Optstring[] = "A:D:I:LR:S:T:abc:f:p:r:t:v";
 
-double set_correct_freq(struct sdrstate *sdr,double freq);
-void decode_rtlsdr_commands(struct sdrstate *,unsigned char *,int);
-void send_rtlsdr_status(struct sdrstate *,int);
+//double set_correct_freq(struct sdrstate *sdr,double freq);
+void decode_soapysdr_commands(struct sdrstate *,unsigned char *,int);
+void send_soapysdr_status(struct sdrstate *,int);
 void do_rtlsdr_agc(struct sdrstate *);
 void rx_callback(unsigned char *buf,uint32_t len, void *ctx);
 void *display(void *);
@@ -180,12 +166,15 @@ int main(int argc,char *argv[]){
   setlinebuf(stdout);
 
   struct sdrstate * const sdr = (struct sdrstate *)calloc(1,sizeof(struct sdrstate));
+  /*
   sdr->blocksize = DEFAULT_BLOCKSIZE;
   sdr->samprate = DEFAULT_SAMPRATE;
+  */
 
   int c;
   double init_frequency = NAN;
   while((c = getopt_long(argc,argv,Optstring,Options,NULL)) != -1){
+      /*
     switch(c){
     case 'A':
       Default_mcast_iface = optarg;
@@ -238,7 +227,9 @@ int main(int argc,char *argv[]){
       fprintf(stderr,"Unknown argument %c\n",c);
       break;
     }
+    */
   }
+  /*
   // Enumerate devices, take first successful open - seems to require latest version of libusb
   int device_count = rtlsdr_get_device_count();
 
@@ -370,6 +361,7 @@ int main(int argc,char *argv[]){
   time(&tt);
   if(sdr->rtp.ssrc == 0)
     sdr->rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
+    */
 
   signal(SIGPIPE,SIG_IGN);
   signal(SIGINT,closedown);
@@ -381,10 +373,10 @@ int main(int argc,char *argv[]){
     pthread_create(&sdr->display_thread,NULL,display,sdr);
 
   pthread_create(&sdr->ncmd_thread,NULL,ncmd,sdr);
-  rtlsdr_reset_buffer(sdr->device);
+  //rtlsdr_reset_buffer(sdr->device);
 
   // Blocks until killed
-  rtlsdr_read_async(sdr->device,rx_callback,sdr,0,16*16384);
+  //rtlsdr_read_async(sdr->device,rx_callback,sdr,0,16*16384);
 
   exit(0);
 }
@@ -398,6 +390,7 @@ void *ncmd(void *arg){
   if(sdr->status_sock == -1 || sdr->nctl_sock == -1) 
     return NULL; // Nothing to do
 
+  /*
   int counter = 0;
   while(1){
     unsigned char buffer[Bufsize];
@@ -420,16 +413,19 @@ void *ncmd(void *arg){
       if(cr == 0)
 	continue; // Ignore our own status messages
       sdr->commands++;
-      decode_rtlsdr_commands(sdr,cp,length-1);
+      decode_soapysdr_commands(sdr,cp,length-1);
     }      
     sdr->output_metadata_packets++;
-    send_rtlsdr_status(sdr,(counter == 0));
+    send_soapysdr_status(sdr,(counter == 0));
     if(counter-- <= 0)
       counter = 10;
 
     if(AGC)    
       do_rtlsdr_agc(sdr);
   }
+  */
+
+  return NULL;
 }
 
 // Status display thread
@@ -443,6 +439,7 @@ void *display(void *arg){
   fprintf(sdr->status,"Frequency      step LNA  mixer bband          RF   A/D   Out\n");
   fprintf(sdr->status,"Hz                                           dBFS  dBFS\n");
 
+  /*
   off_t stat_point = ftello(sdr->status);
   // End lines with return when writing to terminal, newlines when writing to status file
   char   eol = stat_point == -1 ? '\r' : '\n';
@@ -466,20 +463,22 @@ void *display(void *arg){
     fflush(sdr->status);
     usleep(100000); // 10 Hz
   }
+  */
   return NULL;
 }
 
-void decode_rtlsdr_commands(struct sdrstate *sdr,unsigned char *buffer,int length){
+void decode_soapysdr_commands(struct sdrstate *sdr,unsigned char *buffer,int length){
   unsigned char *cp = buffer;
 
 
   while(cp - buffer < length){
     int ret __attribute__((unused)); // Won't be used when asserts are disabled
     enum status_type type = *cp++; // increment cp to length field
-    
+
+    /*
     if(type == EOL)
       break; // End of list
-    
+ 
     unsigned int optlen = *cp++;
     if(cp - buffer + optlen >= length)
       break; // Invalid length
@@ -503,10 +502,12 @@ void decode_rtlsdr_commands(struct sdrstate *sdr,unsigned char *buffer,int lengt
       break;
     }
     cp += optlen;
+    */
   }    
 }  
 
-void send_rtlsdr_status(struct sdrstate *sdr,int full){
+void send_soapysdr_status(struct sdrstate *sdr,int full){
+    /*
   unsigned char packet[2048],*bp;
   memset(packet,0,sizeof(packet));
   bp = packet;
@@ -553,9 +554,10 @@ void send_rtlsdr_status(struct sdrstate *sdr,int full){
   int len = bp - packet;
   assert(len < sizeof(packet));
   send(sdr->status_sock,packet,len,0);
+  */
 }
 
-
+/*
 // Callback called with incoming receiver data from A/D
 void rx_callback(unsigned char *buf, uint32_t len, void *ctx){
   int samples = len;
@@ -634,140 +636,11 @@ void do_rtlsdr_agc(struct sdrstate *sdr){
       printf("rtlsdr_set_tuner_gain returns %d\n",r);
   }
 }
-
-#if ORIGINAL_TRUE_FREQ
-double true_freq(uint64_t freq){
-  // Code extracted from tuner_r82xx.c
-  int rc, i;
-  unsigned sleep_time = 10000;
-  uint64_t vco_freq;
-  uint32_t vco_fra;	/* VCO contribution by SDM (kHz) */
-  uint32_t vco_min = 1770000;
-  uint32_t vco_max = vco_min * 2;
-  uint32_t freq_khz, pll_ref, pll_ref_khz;
-  uint16_t n_sdm = 2;
-  uint16_t sdm = 0;
-  uint8_t mix_div = 2;
-  uint8_t div_buf = 0;
-  uint8_t div_num = 0;
-  uint8_t vco_power_ref = 2;
-  uint8_t refdiv2 = 0;
-  uint8_t ni, si, nint, vco_fine_tune, val;
-  uint8_t data[5];
-  
-  /* Frequency in kHz */
-  freq_khz = (freq + 500) / 1000;
-  //  pll_ref = priv->cfg->xtal;
-  pll_ref = 28800000;
-  pll_ref_khz = (pll_ref + 500) / 1000;
-  
-  /* Calculate divider */
-  while (mix_div <= 64) {
-    if (((freq_khz * mix_div) >= vco_min) &&
-	((freq_khz * mix_div) < vco_max)) {
-      div_buf = mix_div;
-      while (div_buf > 2) {
-	div_buf = div_buf >> 1;
-	div_num++;
-      }
-      break;
-    }
-    mix_div = mix_div << 1;
-  }
-  
-  vco_freq = (uint64_t)freq * (uint64_t)mix_div;
-  nint = vco_freq / (2 * pll_ref);
-  vco_fra = (vco_freq - 2 * pll_ref * nint) / 1000;
-
-  ni = (nint - 13) / 4;
-  si = nint - 4 * ni - 13;
-  
-  /* sdm calculator */
-  while (vco_fra > 1) {
-    if (vco_fra > (2 * pll_ref_khz / n_sdm)) {
-      sdm = sdm + 32768 / (n_sdm / 2);
-      vco_fra = vco_fra - 2 * pll_ref_khz / n_sdm;
-      if (n_sdm >= 0x8000)
-	break;
-    }
-    n_sdm <<= 1;
-  }
-  
-  double f;
-  {
-    int ntot = (nint << 16) + sdm;
-
-    double vco = pll_ref * 2 * (nint + sdm / 65536.);
-    f = vco / mix_div;
-    return f;
-  }
-  
-}
-#else // Cleaned up version
-// For a requested frequency, give the actual tuning frequency
-// similar to the code in airspy.c since both use the R820T tuner
-double true_freq(uint64_t freq_hz){
-  const uint32_t VCO_MIN=1770000000u; // 1.77 GHz
-  const uint32_t VCO_MAX=(VCO_MIN << 1); // 3.54 GHz
-  const int MAX_DIV = 5;
-
-  // Clock divider set to 2 for the best resolution
-  const uint32_t pll_ref = 28800000u / 2; // 14.4 MHz
-  
-  // Find divider to put VCO = f*2^(d+1) in range VCO_MIN to VCO_MAX (for ref freq 26 MHz)
-  //          MHz             step, Hz
-  // 0: 885.0     1770.0      190.735
-  // 1: 442.50     885.00      95.367
-  // 2: 221.25     442.50      47.684
-  // 3: 110.625    221.25      23.842
-  // 4:  55.3125   110.625     11.921
-  // 5:  27.65625   55.312      5.960
-  int8_t div_num;
-  for (div_num = 0; div_num <= MAX_DIV; div_num++){
-    uint32_t vco = freq_hz << (div_num + 1);
-    if (VCO_MIN <= vco && vco <= VCO_MAX)
-      break;
-  }
-  if(div_num > MAX_DIV)
-    return 0; // Frequency out of range
-  
-  // PLL programming bits: Nint in upper 16 bits, Nfract in lower 16 bits
-  // Freq steps are pll_ref / 2^(16 + div_num) Hz
-  // Note the '+ (pll_ref >> 1)' term simply rounds the division to the nearest integer
-  uint32_t r = (((uint64_t) freq_hz << (div_num + 16)) + (pll_ref >> 1)) / pll_ref;
-  // Compute true frequency; the 1/4 step bias is a puzzle
-  return ((double)(r + 0.25) * pll_ref) / (double)(1 << (div_num + 16));
-}
-#endif
-
-// set the rtlsdr tuner to the requested frequency applying calibration offset,
-// true frequency correction model for 820T synthesizer
-// the calibration offset is a holdover from the Funcube dongle and doesn't
-// really fit the Rtlsdr with its internal factory calibration
-// All this really works correctly only with a gpsdo
-// Remember, rtlsdr firmware always adds Fs/4 MHz to frequency we give it.
-
-double set_correct_freq(struct sdrstate *sdr,double freq){
-  int64_t intfreq = round(freq / (1 + sdr->calibration));
-  rtlsdr_set_center_freq(sdr->device,intfreq);
-#ifdef USE_NEW_LIBRTLSDR
-  double tf = rtlsdr_get_freq(sdr->device);
-#else
-  double tf = true_freq(rtlsdr_get_center_freq(sdr->device)); // We correct the original imprecise version
-#endif
-
-  sdr->frequency = tf * (1 + sdr->calibration);
-  FILE *fp = fopen(sdr->frequency_file,"w");
-  if(fp == NULL || fprintf(fp,"%lf\n",sdr->frequency) < 0)
-    fprintf(stderr,"Can't write to tuner state file %s: %sn",sdr->frequency_file,strerror(errno));
-  if(fp != NULL)
-    fclose(fp);
-  return sdr->frequency;
-}
+*/
 
 static void closedown(int a){
   fprintf(stderr,"caught signal %'d: %s\n",a,strsignal(a));
-  rtlsdr_cancel_async(Device);
+  //rtlsdr_cancel_async(Device);
 
   if(a == SIGTERM) // sent by systemd when shutting down. Return success
     exit(0);

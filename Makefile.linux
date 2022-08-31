@@ -175,7 +175,7 @@ sdrplayd: sdrplayd.o libradio.a
 	$(CC) $(LDOPTS) -o $@ $^ -lsdrplay_api -lavahi-client -lavahi-common -lbsd -liniparser -lm -lpthread
 
 soapysdr: soapysdr.o libradio.a
-	$(CC) $(LDOPTS) -o $@ $^ -lSoapySDR -lrtlsdr -lavahi-client -lavahi-common -lbsd -liniparser -lm -lpthread
+	$(CC) $(LDOPTS) -o $@ $^ -lSoapySDR -lavahi-client -lavahi-common -lbsd -liniparser -lm -lpthread
 	  
 stereod: stereod.o libradio.a
 	$(CC) $(LDOPTS) -o $@ $^ -lavahi-client -lavahi-common -lfftw3f_threads -lfftw3f -lbsd -lm -lpthread
