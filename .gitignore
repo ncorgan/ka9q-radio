@@ -31,6 +31,7 @@ sdrplayd
 setfilt
 show-pkt
 show-sig
+soapysdr
 stereod
 tune
 wspr-decoded
@@ -38,5 +39,6 @@ old
 RCS
 push.sh
 experiment
+cwd # TODO: own PR
 docs/notes
 docs/monitor-screenshot.png
