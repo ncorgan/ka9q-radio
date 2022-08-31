@@ -1,7 +1,7 @@
-// $Id: rtlsdr.c,v 1.22 2022/08/05 06:35:10 karn Exp $
 // Read from SoapySDR
 // Accept control commands from UDP socket
 #define _GNU_SOURCE 1
+#include <SoapySDR/Constants.h>
 #include <SoapySDR/Device.h>
 #include <SoapySDR/Types.h>
 
@@ -33,7 +33,8 @@
 #include "decimate.h"
 #include "status.h"
 
-// TODO: tabbing, thing in top line
+// TODO: formatting
+// TODO: make sure we close in the error case
 
 // Time in 100 ms update intervals to wait between gain steps
 int const HOLDOFF_TIME = 2;
@@ -52,8 +53,24 @@ char *Dev = ""; // Default to first device found
 struct SoapySDRDevice *Device; // Set for benefit of closedown()
 
 struct sdrstate {
-  struct SoapySDRDevice *device;    // Opaque pointer
-  struct SoapySDRStream *stream;    // Opaque pointer
+  struct SoapySDRDevice *device; // Opaque pointer
+  struct SoapySDRStream *stream; // Opaque pointer
+
+  char *driver_key;
+  char *hardware_key;
+  char *hardware_info;
+
+  size_t channel;
+
+  char *frontend_mapping;
+  char *antenna;
+
+  double frequency;
+  char *frequency_tune_args;
+
+  double gain;
+  double sample_rate;
+  double bandwidth;
 
 /*
   uint32_t sample_rates[20];
@@ -138,11 +155,9 @@ static char const Optstring[] = "A:D:I:LR:S:T:abc:f:p:r:t:v";
 //double set_correct_freq(struct sdrstate *sdr,double freq);
 void decode_soapysdr_commands(struct sdrstate *,unsigned char *,int);
 void send_soapysdr_status(struct sdrstate *,int);
-void do_rtlsdr_agc(struct sdrstate *);
 void rx_callback(unsigned char *buf,uint32_t len, void *ctx);
 void *display(void *);
 void *ncmd(void *);
-double true_freq(uint64_t freq);
 static void closedown(int a);
 
 int main(int argc,char *argv[]){
@@ -172,7 +187,11 @@ int main(int argc,char *argv[]){
   */
 
   int c;
+  int ret;
   double init_frequency = NAN;
+  double init_gain = NAN;
+  double init_sample_rate = NAN;
+  double init_bandwidth = NAN;
   while((c = getopt_long(argc,argv,Optstring,Options,NULL)) != -1){
       /*
     switch(c){
@@ -229,26 +248,120 @@ int main(int argc,char *argv[]){
     }
     */
   }
-  /*
-  // Enumerate devices, take first successful open - seems to require latest version of libusb
-  int device_count = rtlsdr_get_device_count();
+    // Enumerate devices, take first that match args
+    size_t device_count = 0;
+    SoapySDRKwargs *devices = SoapySDRDevice_enumerateStrArgs(Dev, &device_count);
+    if(device_count == 0){
+        fprintf(stderr, "No SoapySDR devices found for args: %s\n", Dev);
+        exit(1);
+    }
 
-  for(int i=0; i < device_count; i++){
-    char manufacturer[256],product[256],serial[256];
-    rtlsdr_get_device_usb_strings(i,manufacturer,product,serial);
-    
-    fprintf(stderr,"RTL-SDR %d (%s): %s %s %s\n",i,rtlsdr_get_device_name(i),
-	    manufacturer,product,serial);
-  }      
-  // Open
-  int ret = rtlsdr_open(&sdr->device,Dev);
-  if(ret < 0){
-    fprintf(stderr,"rtlsdr_open(%d) failed: %d\n",Dev,ret);
-    exit(1);
-  }
-  Device = sdr->device;
-  uint32_t rtl_freq,tuner_freq;
-  ret = rtlsdr_get_xtal_freq(sdr->device,&rtl_freq,&tuner_freq);
+    for(size_t i = 0; i < device_count; ++i){
+        char *device_str = SoapySDRKwargs_toString(&devices[i]);
+        if(device_str){
+            fprintf(stderr, "SoapySDR device: %s\n", device_str);
+            free(device_str);
+        }
+    }
+    SoapySDRKwargsList_clear(devices, device_count);
+
+    // Open
+    sdr->device = SoapySDRDevice_makeStrArgs(Dev);
+    if(!sdr->device){
+        fprintf(stderr, "Failed to open SoapySDR device with args: %s\n", Dev);
+        exit(1);
+    }
+
+    // Get device info
+    sdr->driver_key = SoapySDRDevice_getDriverKey(sdr->device);
+    sdr->hardware_key = SoapySDRDevice_getHardwareKey(sdr->device);
+
+    SoapySDRKwargs hardware_info = SoapySDRDevice_getHardwareInfo(sdr->device);
+    sdr->hardware_info = SoapySDRKwargs_toString(&hardware_info);
+    SoapySDRKwargs_clear(&hardware_info);
+
+    // Set frontend mapping if specified
+    if(sdr->frontend_mapping){
+        ret = SoapySDRDevice_setFrontendMapping(sdr->device, SOAPY_SDR_RX, sdr->frontend_mapping);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setFrontendMapping returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    sdr->frontend_mapping = SoapySDRDevice_getFrontendMapping(sdr->device, SOAPY_SDR_RX);
+
+    // Set antenna if specified
+    if(sdr->antenna){
+        ret = SoapySDRDevice_setAntenna(sdr->device, SOAPY_SDR_RX, sdr->channel, sdr->antenna);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setAntenna returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    sdr->antenna = SoapySDRDevice_getAntenna(sdr->device, SOAPY_SDR_RX, sdr->channel);
+
+    // Set frequency if specified
+    if(!isnan(init_frequency)){
+        SoapySDRKwargs tune_args;
+        SoapySDRKwargs *tune_args_param = NULL;
+
+        if(sdr->frequency_tune_args){
+            tune_args = SoapySDRKwargs_fromString(sdr->frequency_tune_args);
+            tune_args_param = &tune_args;
+        }
+
+        ret = SoapySDRDevice_setFrequency(sdr->device, SOAPY_SDR_RX, sdr->channel, init_frequency, tune_args_param);
+        if(sdr->frequency_tune_args){
+            SoapySDRKwargs_clear(&tune_args);
+        }
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setFrequency returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    else if(sdr->frequency_tune_args){
+        fprintf(stderr, "You must specify a frequency if specifying tune arguments.\n");
+        exit(1);
+    }
+    sdr->frequency = SoapySDRDevice_getFrequency(sdr->device, SOAPY_SDR_RX, sdr->channel);
+    fprintf(stderr, "Frequency set to %f MHz\n", (sdr->frequency / 1e6));
+
+    // Set gain if specified
+    if(!isnan(init_gain)){
+        ret = SoapySDRDevice_setGain(sdr->device, SOAPY_SDR_RX, sdr->channel, init_gain);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setGain returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    sdr->gain = SoapySDRDevice_getGain(sdr->device, SOAPY_SDR_RX, sdr->channel);
+    fprintf(stderr, "Device gain set to %f dB\n", sdr->gain);
+
+    // Set sample rate if specified
+    if(!isnan(init_sample_rate)){
+        ret = SoapySDRDevice_setSampleRate(sdr->device, SOAPY_SDR_RX, sdr->channel, init_sample_rate);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setSampleRate returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    sdr->sample_rate = SoapySDRDevice_getSampleRate(sdr->device, SOAPY_SDR_RX, sdr->channel);
+    fprintf(stderr, "Sample rate set to %f MHz\n", (sdr->sample_rate / 1e6));
+
+    // Set bandwidth if specified
+    if(!isnan(init_bandwidth)){
+        ret = SoapySDRDevice_setBandwidth(sdr->device, SOAPY_SDR_RX, sdr->channel, init_bandwidth);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setBandwidth returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+    }
+    sdr->bandwidth = SoapySDRDevice_getBandwidth(sdr->device, SOAPY_SDR_RX, sdr->channel);
+    fprintf(stderr, "Bandwidth set to %f MHz\n", (sdr->bandwidth / 1e6));
+
+    // TODO: correction policies
+
+  /*
   fprintf(stderr,"RTL freq = %u, tuner freq = %u\n",(unsigned)rtl_freq,(unsigned)tuner_freq);
   fprintf(stderr,"RTL tuner type %d\n",rtlsdr_get_tuner_type(sdr->device));
   int ngains = rtlsdr_get_tuner_gains(sdr->device,NULL);
