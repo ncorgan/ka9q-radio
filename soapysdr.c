@@ -1,5 +1,5 @@
 // $Id: rtlsdr.c,v 1.22 2022/08/05 06:35:10 karn Exp $
-// Read from RTL SDR
+// Read from SoapySDR
 // Accept control commands from UDP socket
 #define _GNU_SOURCE 1
 #include <assert.h>
