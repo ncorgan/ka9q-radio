@@ -59,6 +59,8 @@ struct sdrstate {
   char *driver_key;
   char *hardware_key;
   char *hardware_info;
+  char *description;
+  uint32_t hardware_info_hash;
 
   size_t channel;
 
@@ -67,37 +69,11 @@ struct sdrstate {
 
   double frequency;
   char *frequency_tune_args;
+  char *frequency_file; // Local file to store frequency in case we restart
 
   double gain;
   double sample_rate;
   double bandwidth;
-
-/*
-  uint32_t sample_rates[20];
-  uint64_t SN; // Serial number
-  char *description;
-  int samprate; // True sample rate of single A/D converter
-
-  int antenna_bias; // Bias tee on/off
-
-  // Tuning
-  double frequency;
-  double calibration; // Frequency error
-  int frequency_lock;
-  char *frequency_file; // Local file to store frequency in case we restart
-
-  // AGC
-  int holdoff_counter; // Time delay when we adjust gains
-  int linearity; // Use linearity gain tables; default is sensitivity
-  int gain;      // Gain passed to manual gain setting
-
-  // Sample statistics
-  int clips;  // Sample clips since last reset
-  float power;   // Running estimate of A/D signal power
-  float DC;      // DC offset for real samples
-*/
-
-  int blocksize;// Number of real samples per packet or twice the number of complex samples per packet
 
   FILE *status;    // Real-time display in /run (currently unused)
 
@@ -181,6 +157,8 @@ int main(int argc,char *argv[]){
   setlinebuf(stdout);
 
   struct sdrstate * const sdr = (struct sdrstate *)calloc(1,sizeof(struct sdrstate));
+  sdr->device = NULL;
+  sdr->stream = NULL;
   /*
   sdr->blocksize = DEFAULT_BLOCKSIZE;
   sdr->samprate = DEFAULT_SAMPRATE;
@@ -278,7 +256,14 @@ int main(int argc,char *argv[]){
 
     SoapySDRKwargs hardware_info = SoapySDRDevice_getHardwareInfo(sdr->device);
     sdr->hardware_info = SoapySDRKwargs_toString(&hardware_info);
+    sdr->description = SoapySDRKwargs_toString(&hardware_info);
     SoapySDRKwargs_clear(&hardware_info);
+
+    fprintf(stderr, "SoapySDR device: \"%s\"\n", sdr->description);
+
+    // We don't necessarily have a serial to use, so when we need it for non-display purposes,
+    // use this instead.
+    sdr->hardware_info_hash = ElfHashString(sdr->hardware_info);
 
     // Set frontend mapping if specified
     if(sdr->frontend_mapping){
@@ -359,59 +344,41 @@ int main(int argc,char *argv[]){
     sdr->bandwidth = SoapySDRDevice_getBandwidth(sdr->device, SOAPY_SDR_RX, sdr->channel);
     fprintf(stderr, "Bandwidth set to %f MHz\n", (sdr->bandwidth / 1e6));
 
-    // TODO: correction policies
+    // Enable automatic DC offset correction if supported
+    if(SoapySDRDevice_hasDCOffsetMode(sdr->device, SOAPY_SDR_RX, sdr->channel)){
+        ret = SoapySDRDevice_setDCOffsetMode(sdr->device, SOAPY_SDR_RX, sdr->channel, true);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setDCOffsetMode returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+        fprintf(stderr, "Automatic DC offset correction enabled\n");
+    }
 
-  /*
-  fprintf(stderr,"RTL freq = %u, tuner freq = %u\n",(unsigned)rtl_freq,(unsigned)tuner_freq);
-  fprintf(stderr,"RTL tuner type %d\n",rtlsdr_get_tuner_type(sdr->device));
-  int ngains = rtlsdr_get_tuner_gains(sdr->device,NULL);
-  int gains[ngains];
-  rtlsdr_get_tuner_gains(sdr->device,gains);
-  fprintf(stderr,"Tuner gains:");
-  for(int i=0; i < ngains; i++)
-    fprintf(stderr," %d",gains[i]);
-  fprintf(stderr,"\n");
-  rtlsdr_set_freq_correction(sdr->device,0); // don't use theirs, only good to integer ppm
-  rtlsdr_set_tuner_bandwidth(sdr->device, 0); // Auto bandwidth
-  rtlsdr_set_agc_mode(sdr->device,0);
+    // Enable automatic IQ balance correction if supported
+    if(SoapySDRDevice_hasIQBalanceMode(sdr->device, SOAPY_SDR_RX, sdr->channel)){
+        ret = SoapySDRDevice_setIQBalanceMode(sdr->device, SOAPY_SDR_RX, sdr->channel, true);
+        if(ret){
+            fprintf(stderr, "SoapySDRDevice_setIQBalanceMode returned error %d (%s)\n", ret, SoapySDRDevice_lastError());
+            exit(1);
+        }
+        fprintf(stderr, "Automatic IQ balance correction enabled\n");
+    }
 
-  if(AGC){
-    rtlsdr_set_tuner_gain_mode(sdr->device,1); // manual gain mode (i.e., we do it)
-    rtlsdr_set_tuner_gain(sdr->device,0);
-    sdr->gain = 0;
-    sdr->holdoff_counter = HOLDOFF_TIME;
-  } else
-    rtlsdr_set_tuner_gain_mode(sdr->device,0); // auto gain mode (i.e., the firmware does it)
-  
-  ret = rtlsdr_set_bias_tee(sdr->device,sdr->antenna_bias);
-
-  rtlsdr_set_direct_sampling(sdr->device, 0); // That's for HF
-  rtlsdr_set_offset_tuning(sdr->device,0); // Leave the DC spike for now
-  if(sdr->samprate == 0){
-    fprintf(stderr,"Select sample rate\n");
-    exit(1);
-  }
-  ret = rtlsdr_set_sample_rate(sdr->device,(uint32_t)sdr->samprate);
-
-  fprintf(stderr,"Set sample rate %'u Hz, IQ\n",sdr->samprate);
-
-  // argv[optind] is presently just the USB device number, which is rather meaningless
-  sdr->description = argv[optind];
-  fprintf(stderr,"Rtlsdr handler %s: serial %llx\n",sdr->description,(long long unsigned)sdr->SN);
-  ret = asprintf(&sdr->frequency_file,"%s/tune-rtlsdr.%llx",VARDIR,(unsigned long long)sdr->SN);
+  // Frequency file, in case we restart
+  ret = asprintf(&sdr->frequency_file,"%s/tune-soapysdr.%llx",VARDIR,(unsigned long long)sdr->hardware_info_hash);
   if(ret == -1)
     exit(1);
 
   // Set up output sockets
   if(sdr->data_dest == NULL){
     // Construct from serial number
-    int ret = asprintf(&sdr->data_dest,"rtlsdr-%016llx-pcm.local",(long long unsigned)sdr->SN);
+    int ret = asprintf(&sdr->data_dest,"soapysdr-%016llx-pcm.local",(long long unsigned)sdr->hardware_info_hash);
     if(ret == -1)
       exit(1);
   }
   if(sdr->metadata_dest == NULL){
     // Construct from serial number
-    int ret = asprintf(&sdr->metadata_dest,"rtlsdr-%016llx-status.local",(long long unsigned)sdr->SN);
+    int ret = asprintf(&sdr->metadata_dest,"soapysdr-%016llx-status.local",(long long unsigned)sdr->hardware_info_hash);
     if(ret == -1)
       exit(1);
   }
@@ -420,9 +387,9 @@ int main(int argc,char *argv[]){
     // Service name, if present, must be unique
     // Description, if present becomes TXT record if present
     char service_name[1024];
-    snprintf(service_name,sizeof(service_name),"rtlsdr (%s)",sdr->metadata_dest);
+    snprintf(service_name,sizeof(service_name),"soapysdr (%s)",sdr->metadata_dest);
     avahi_start(service_name,"_ka9q-ctl._udp",5006,sdr->metadata_dest,ElfHashString(sdr->metadata_dest),sdr->description);
-    snprintf(service_name,sizeof(service_name),"rtlsdr (%s)",sdr->data_dest);
+    snprintf(service_name,sizeof(service_name),"soapysdr (%s)",sdr->data_dest);
     avahi_start(service_name,"_rtp._udp",5004,sdr->data_dest,ElfHashString(sdr->data_dest),sdr->description);
   }
   {
@@ -451,30 +418,7 @@ int main(int argc,char *argv[]){
   }
   sdr->rtp_type = IQ_PT8;
 
-  {
-    if(isnan(init_frequency)){
-      // If not set on command line, load saved frequency
-      FILE *fp = fopen(sdr->frequency_file,"r+");
-      if(fp == NULL || fscanf(fp,"%lf",&init_frequency) < 0)
-	fprintf(stderr,"Can't read stored freq from %s: %s\n",sdr->frequency_file,strerror(errno));
-      else
-	fprintf(stderr,"Using stored frequency %lf from tuner state file %s\n",init_frequency,sdr->frequency_file);
-      if(fp != NULL)
-	fclose(fp);
-    }
-  }
-  if(isnan(init_frequency)){
-    // Not set on command line, and not read from file. Use fallback to cover 2m
-    init_frequency = 149e6; // Fallback default
-    fprintf(stderr,"Fallback default frequency %'.3lf Hz\n",init_frequency);
-  }
-  fprintf(stderr,"Setting initial frequency %'.3lf Hz\n",init_frequency);
-  set_correct_freq(sdr,init_frequency);
-  time_t tt;
-  time(&tt);
-  if(sdr->rtp.ssrc == 0)
-    sdr->rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
-    */
+  // TODO: restore frequency file stuff?
 
   signal(SIGPIPE,SIG_IGN);
   signal(SIGINT,closedown);
@@ -541,12 +485,12 @@ void *ncmd(void *arg){
   return NULL;
 }
 
-// Status display thread
+// Status display thread (TODO: fix fields for SoapySDR)
 void *display(void *arg){
   assert(arg != NULL);
   struct sdrstate *sdr = (struct sdrstate *)arg;
 
-  pthread_setname("rtlsdr-disp");
+  pthread_setname("soapysdr-disp");
 
   fprintf(sdr->status,"               |-----Gains dB-- ---|      |----Levels dB --|           clips\n");
   fprintf(sdr->status,"Frequency      step LNA  mixer bband          RF   A/D   Out\n");
