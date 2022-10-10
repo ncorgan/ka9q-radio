@@ -21,7 +21,7 @@ LDLIBS=-lpthread -lbsd -lm
 #DAEMONS=aprs aprsfeed funcubed opusd packetd radiod airspyd airspyhfd stereod rdsd rtlsdr sdrplayd
 DAEMONS=aprs aprsfeed cwd funcubed opusd packetd radiod airspyd airspyhfd stereod rdsd rtlsdr
 
-EXECS=iqplay iqrecord modulate monitor opussend pcmsend pcmcat pcmrecord pcmspawn control metadump pl show-pkt show-sig tune wspr-decoded setfilt
+EXECS=iqplay iqrecord modulate monitor opussend pcmsend pcmcat pcmrecord pcmspawn control metadump pl show-pkt show-sig soapysdr tune wspr-decoded setfilt
 
 AFILES=bandplan.txt help.txt modes.conf id.txt monitor-help.txt
 
